@@ -1,0 +1,27 @@
+# Bulk data — hosted on Roboflow, not GitHub
+/Datasets/
+/Raw Data/
+/Videos/
+/Unlabeled Images/
+
+# Roboflow workflow exports (large, regenerable)
+/Computer Vision Code/Roboflow Workflows/
+
+# Old/superseded code
+/Computer Vision Code/Old Version/
+
+# Not needed in repo
+/Research Paper/
+/Research Paper/Space Leader Grant/
+/Research Paper/Timeline_Table.xlsx
+
+# Secrets and local junk
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# Jupyter checkpoints (common source of "phantom file" errors like the one you just hit)
+.ipynb_checkpoints/
