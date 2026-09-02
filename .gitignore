@@ -25,3 +25,11 @@ Thumbs.db
 
 # Jupyter checkpoints (common source of "phantom file" errors like the one you just hit)
 .ipynb_checkpoints/
+
+# YOLOv26 model run exports - keep only the zip archives, not extracted contents
+Computer Vision Code/YOLOv26/**/*.png
+Computer Vision Code/YOLOv26/**/*.jpg
+Computer Vision Code/YOLOv26/**/*.jpeg
+Computer Vision Code/YOLOv26/**/*.csv
+Computer Vision Code/YOLOv26/**/*.yaml
+Computer Vision Code/YOLOv26/**/weights/
