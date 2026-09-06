@@ -33,3 +33,5 @@ Computer Vision Code/YOLOv26/**/*.jpeg
 Computer Vision Code/YOLOv26/**/*.csv
 Computer Vision Code/YOLOv26/**/*.yaml
 Computer Vision Code/YOLOv26/**/weights/
+
+lfs_objects.txt
