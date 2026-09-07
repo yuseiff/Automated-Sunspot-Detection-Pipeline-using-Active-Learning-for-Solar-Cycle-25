@@ -1,0 +1,30 @@
+{
+  "run_id": "20260907_045312",
+  "started_at": "2026-09-07T04:53:12",
+  "status": "interrupted",
+  "model_type": "yolo",
+  "model_path": "Computer Vision Code\\YOLOv26\\YOLO26_Dataset Version2\\Preprocessing2\\YOLO26_M_V2_V2\\weights\\best.pt",
+  "slice_wh": [
+    1024,
+    1024
+  ],
+  "overlap_ratio_wh": [
+    0.2,
+    0.2
+  ],
+  "conf_threshold": 0.25,
+  "iou_threshold": 0.5,
+  "thread_workers": 1,
+  "test_images_dir": "Datasets\\Final Dataset 4k\\Sunspots.yolo26\\test\\images",
+  "test_labels_dir": "Datasets\\Final Dataset 4k\\Sunspots.yolo26\\test\\labels",
+  "test_data_yaml": "Datasets\\Final Dataset 4k\\Sunspots.yolo26\\data.yaml",
+  "num_images": 455,
+  "final_metrics": {
+    "mAP@50": 0.4833,
+    "mAP@50-95": 0.1811,
+    "precision@50": 0.2294,
+    "recall@50": 0.7202,
+    "f1@50": 0.348
+  },
+  "finished_at": "2026-09-07T07:01:24"
+}

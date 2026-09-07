@@ -19,7 +19,11 @@ Install:
     pip install ultralytics supervision opencv-python tqdm
 """
 
+import csv
+import json
 import os
+import time
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -46,6 +50,11 @@ SLICE_WH = (1024, 1024)
 OVERLAP_RATIO_WH = (0.2, 0.2)
 CONF_THRESHOLD = 0.25
 IOU_THRESHOLD = 0.5
+THREAD_WORKERS = 1  # ultralytics YOLO's predict() is NOT thread-safe when
+                     # sharing a single model instance -- concurrent calls can
+                     # race during internal setup/fusion and crash or silently
+                     # corrupt results. Keep this at 1 unless you give each
+                     # worker its own separate model instance.
 
 # Which pipeline to run when the script is executed directly:
 # "single"   -> run_workflow() on IMAGE_PATH / OUTPUT_PATH (as before)
@@ -63,6 +72,9 @@ TEST_IMAGES_DIR = r"Datasets\Final Dataset 4k\Sunspots.yolo26\test\images"
 TEST_LABELS_DIR = r"Datasets\Final Dataset 4k\Sunspots.yolo26\test\labels"
 TEST_DATA_YAML = r"Datasets\Final Dataset 4k\Sunspots.yolo26\data.yaml"
 
+# Where per-run evaluation logs (config JSON + per-image metrics CSV) go.
+LOG_DIR = r"Computer Vision Code\Workflow\prediction\evaluation_logs"
+
 
 # ---------------------------------------------------------------------------
 # Model loaders
@@ -78,6 +90,14 @@ def load_yolo26(model_path: str = YOLO_MODEL_PATH):
         class_names: dict mapping class_id -> class name
     """
     model = YOLO(model_path)
+
+    # Warm up: ultralytics lazily builds/fuses its internal predictor on the
+    # first predict() call, which mutates shared model state and is not
+    # thread-safe. Running one dummy inference here forces that one-time
+    # setup to happen safely, up front, before InferenceSlicer starts calling
+    # predict_fn.
+    _dummy = np.zeros((SLICE_WH[1], SLICE_WH[0], 3), dtype=np.uint8)
+    model.predict(_dummy, conf=CONF_THRESHOLD, verbose=False)
 
     def predict_fn(image_slice: np.ndarray) -> sv.Detections:
         result = model(image_slice, conf=CONF_THRESHOLD, verbose=False)[0]
@@ -126,6 +146,7 @@ def build_slicer(predict_fn) -> sv.InferenceSlicer:
         slice_wh=SLICE_WH,
         overlap_wh=overlap_wh,
         iou_threshold=IOU_THRESHOLD,
+        thread_workers=THREAD_WORKERS,
     )
 
 
@@ -171,6 +192,14 @@ def run_workflow(model: str = MODEL_TYPE) -> dict:
 # Evaluation: run the full workflow over a labeled YOLO-format test set and
 # compute mAP@50, precision, recall, and F1 (all at IoU 0.50) by comparing
 # stitched predictions against ground-truth annotations.
+#
+# Logging:
+#   - A JSON config file records the workflow parameters (model type/path,
+#     slice_wh, overlap_ratio_wh, thresholds, dataset paths) plus the running
+#     status and final metrics. It's rewritten after every image, so it always
+#     reflects the latest state even if the run is interrupted.
+#   - A CSV file records the cumulative metrics after every single image,
+#     flushed to disk immediately, so progress is never lost.
 # ---------------------------------------------------------------------------
 def evaluate_workflow(model: str = MODEL_TYPE) -> dict:
     # Loads images + YOLO .txt annotations + class names from data.yaml
@@ -188,36 +217,115 @@ def evaluate_workflow(model: str = MODEL_TYPE) -> dict:
     recall_metric = Recall()
     f1_metric = F1Score()
 
-    progress_bar = tqdm(dataset, total=len(dataset), desc="Evaluating", unit="img")
-    for image_path, image, ground_truth in progress_bar:
-        predictions: sv.Detections = slicer(image)
+    # --- Set up logging -------------------------------------------------
+    os.makedirs(LOG_DIR, exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config_path = os.path.join(LOG_DIR, f"{run_id}_config.json")
+    metrics_csv_path = os.path.join(LOG_DIR, f"{run_id}_metrics.csv")
 
-        map_metric.update(predictions, ground_truth)
-        precision_metric.update(predictions, ground_truth)
-        recall_metric.update(predictions, ground_truth)
-        f1_metric.update(predictions, ground_truth)
-
-        progress_bar.set_postfix(
-            pred=len(predictions),
-            gt=len(ground_truth),
-        )
-
-    map_result = map_metric.compute()
-    precision_result = precision_metric.compute()
-    recall_result = recall_metric.compute()
-    f1_result = f1_metric.compute()
-
-    metrics = {
-        "mAP@50": map_result.map50,
-        "mAP@50-95": map_result.map50_95,
-        "precision@50": precision_result.precision_at_50,
-        "recall@50": recall_result.recall_at_50,
-        "f1@50": f1_result.f1_50,
+    run_config = {
+        "run_id": run_id,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "running",
+        "model_type": model,
+        "model_path": YOLO_MODEL_PATH if model == "yolo" else RFDETR_MODEL_PATH,
+        "slice_wh": list(SLICE_WH),
+        "overlap_ratio_wh": list(OVERLAP_RATIO_WH),
+        "conf_threshold": CONF_THRESHOLD,
+        "iou_threshold": IOU_THRESHOLD,
+        "thread_workers": THREAD_WORKERS,
+        "test_images_dir": TEST_IMAGES_DIR,
+        "test_labels_dir": TEST_LABELS_DIR,
+        "test_data_yaml": TEST_DATA_YAML,
+        "num_images": len(dataset),
+        "final_metrics": {},
     }
+
+    def save_config():
+        with open(config_path, "w") as f:
+            json.dump(run_config, f, indent=2)
+
+    save_config()
+    print(f"Run config:          {config_path}")
+    print(f"Per-image metrics:   {metrics_csv_path}")
+
+    fieldnames = [
+        "image_index",
+        "image_path",
+        "elapsed_sec",
+        "num_predictions",
+        "num_ground_truth",
+        "mAP@50",
+        "mAP@50-95",
+        "precision@50",
+        "recall@50",
+        "f1@50",
+    ]
+    csv_file = open(metrics_csv_path, "w", newline="")
+    writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    writer.writeheader()
+    csv_file.flush()
+
+    metrics: dict = {}
+    start_time = time.time()
+    progress_bar = tqdm(dataset, total=len(dataset), desc="Evaluating", unit="img")
+
+    try:
+        for idx, (image_path, image, ground_truth) in enumerate(progress_bar, start=1):
+            predictions: sv.Detections = slicer(image)
+
+            map_metric.update(predictions, ground_truth)
+            precision_metric.update(predictions, ground_truth)
+            recall_metric.update(predictions, ground_truth)
+            f1_metric.update(predictions, ground_truth)
+
+            # Cumulative metrics computed over all images seen so far.
+            map_result = map_metric.compute()
+            precision_result = precision_metric.compute()
+            recall_result = recall_metric.compute()
+            f1_result = f1_metric.compute()
+
+            metrics = {
+                "mAP@50": round(float(map_result.map50), 4),
+                "mAP@50-95": round(float(map_result.map50_95), 4),
+                "precision@50": round(float(precision_result.precision_at_50), 4),
+                "recall@50": round(float(recall_result.recall_at_50), 4),
+                "f1@50": round(float(f1_result.f1_50), 4),
+            }
+
+            writer.writerow({
+                "image_index": idx,
+                "image_path": image_path,
+                "elapsed_sec": round(time.time() - start_time, 2),
+                "num_predictions": len(predictions),
+                "num_ground_truth": len(ground_truth),
+                **metrics,
+            })
+            csv_file.flush()  # make sure this row survives a crash/interrupt
+
+            progress_bar.set_postfix(
+                pred=len(predictions),
+                gt=len(ground_truth),
+                mAP50=metrics["mAP@50"],
+            )
+
+        run_config["status"] = "completed"
+
+    except KeyboardInterrupt:
+        run_config["status"] = "interrupted"
+        print("\nEvaluation interrupted -- partial results have already been saved.")
+
+    finally:
+        csv_file.close()
+        run_config["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        run_config["final_metrics"] = metrics
+        save_config()
 
     print("\n=== Evaluation Results (IoU 0.50) ===")
     for name, value in metrics.items():
         print(f"{name}: {value:.4f}")
+    print(f"\nFull config + final metrics: {config_path}")
+    print(f"Per-image progress log:      {metrics_csv_path}")
 
     return metrics
 
