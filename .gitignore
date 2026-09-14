@@ -35,3 +35,4 @@ Computer Vision Code/YOLOv26/**/*.yaml
 Computer Vision Code/YOLOv26/**/weights/
 
 lfs_objects.txt
+quick_timing_test.py
